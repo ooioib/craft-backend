@@ -12,10 +12,15 @@ import lombok.*;
 @NoArgsConstructor
 @Builder
 public class Product {
+
     @Id
     private String id;
+
     private String name;
+
     private String type;
+
     private String unit;
+
     private Long standardCost;
 }
