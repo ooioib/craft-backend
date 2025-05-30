@@ -3,12 +3,12 @@ package org.codenova.craft.controller;
 
 import lombok.RequiredArgsConstructor;
 
-import org.codenova.craft.entity.Order;
-import org.codenova.craft.entity.OrderItem;
-import org.codenova.craft.repository.OrderItemRepository;
-import org.codenova.craft.repository.OrderRepository;
-import org.codenova.craft.repository.ProductRepository;
+import org.codenova.craft.entity.*;
+import org.codenova.craft.repository.*;
 import org.codenova.craft.request.NewOrder;
+import org.codenova.craft.response.Demand;
+import org.codenova.craft.response.OrderItemSummary;
+import org.codenova.craft.service.BomService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -24,6 +24,9 @@ public class OrderController {
     private final OrderRepository orderRepository;         // 주문 정보 저장
     private final OrderItemRepository orderItemRepository; // 주문 항목 저장
     private final ProductRepository productRepository;     // 제품 정보 조회
+    private final InventoryRepository inventoryRepository;
+    private final PurchaseRepository purchaseRepository;
+    private final BomService bomService;
 
 
     // 주문 처리하는 POST API
@@ -70,9 +73,9 @@ public class OrderController {
     }
 
 
-    // 현재 등록된 주문정보 리스트 조회 API
-    @GetMapping("/api/order/list")
-    public ResponseEntity<?> orderListHandle() {
+    // 등록된 주문정보 리스트 조회 API
+    @GetMapping("/api/order")
+    public ResponseEntity<?> getAllOrders() {
 
         // DB에서 모든 주문 데이터 조회
         List<Order> orders = orderRepository.findAll();
@@ -83,10 +86,93 @@ public class OrderController {
         response.put("orders", orders);
 
         return ResponseEntity.status(200).body(response);
+
     }
 
-    // 특정 주문상세 정보
+    // 주문상세 정보 조회 API
+    @GetMapping("/api/order/{orderId}")
+    public ResponseEntity<?> getAllOrders(@PathVariable Long orderId) {
+
+        /*
+            findById는 Optional로 반환되므로 실제 실제 프로젝트 때는
+            실제 실제 프로젝트 때는 이 부분 분기처리 해야 함!
+         */
+
+        // DB에서 orderId에 해당하는 주문 조회 (없는 경우 예외 발생)
+        Order order = orderRepository.findById(orderId).orElseThrow();
+
+        // 해당 주문에 포함된 모든 주문 항목들 조회
+        List<OrderItem> items = orderItemRepository.findByOrder(order);
+
+        // 주문 항목들을 프론트에 전달할 수 있도록 요약 정보로 가공
+        List<OrderItemSummary> itemsSummary = items.stream().map((elm) -> {
+            return OrderItemSummary.builder()
+                    .id(elm.getId())                            // 주문 항목 ID
+                    .productId(elm.getProduct().getId())        // 제품 ID
+                    .productName(elm.getProduct().getName())    // 제품 이름
+                    .quantity(elm.getQuantity())                // 주문 수량
+                    .status(elm.getStatus())                    // 상태
+                    .build();
+        }).toList();
+
+        // 클라이언트에 보낼 응답 데이터 구성
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", 200);              // 응답 상태 코드
+        response.put("order", order);             // 주문 전체 정보
+        response.put("orderItems", itemsSummary); // 주문 항목 요약 리스트
+
+        return ResponseEntity.status(200).body(response);
+    }
+
+
+    // 주문 확정 처리 API
+    @PatchMapping("/api/order/{orderId}/approve")
+    public ResponseEntity<?> approveOrder(@PathVariable Long orderId) {
+
+        // 주문 ID로 주문 조회
+        Order order = orderRepository.findById(orderId).orElseThrow();
+
+        // 해당 주문의 주문 항목 전체 조회
+        List<OrderItem> orderItemList = orderItemRepository.findByOrder(order);
+
+        // 각 주문 항목 처리
+        for (OrderItem orderItem : orderItemList) {
+
+            // 해당 제품의 재고 정보 조회
+            Inventory inventory = inventoryRepository.findByProduct(orderItem.getProduct());
+
+            // 실제 사용 가능한 재고 계산(전체 재고 - 이미 예약된 수량)
+            if (inventory.getStockQuantity() - inventory.getReservedQuantity() >= orderItem.getQuantity()) {
+                orderItem.setStatus("COMPLETED");
+                orderItemRepository.save(orderItem);
+
+                inventory.setReservedQuantity(inventory.getReservedQuantity() + orderItem.getQuantity());
+                inventoryRepository.save(inventory);
+
+                // 재고가 부족한 경우
+            } else {
+                // 필요한 자재 목록 계산
+                List<Demand> demands = bomService.calculateRequiredMaterials(orderItem.getProduct());
+
+                // 주문 항목 상태 변경
+                orderItem.setStatus("WAITING");
+                orderItemRepository.save(orderItem);
+
+                // 자재별로 반복하며 부족한 수량만큼 구매 요청 생성
+                for (Demand demand : demands) {
+                    Product material = demand.getProduct();
+                    int requiredQty = demand.getQuantity();
 
 
 
+                    Purchase purchase = Purchase.builder().build();
+
+
+                    purchaseRepository.save(purchase);
+                }
+            }
+
+            return null;
+        }
+    }
 }
